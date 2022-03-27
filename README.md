@@ -1,1 +1,1 @@
-# CAU_CV_assignments
+# CAU_CV_projects
