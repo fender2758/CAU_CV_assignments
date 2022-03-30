@@ -11,17 +11,19 @@
 #define GRAY 0
 #define RGB 1
 #define GRADIENT 2
+
 using namespace cv;
 using namespace std;
 
 Point ptOld;
-int number_bins = 8;
+const int number_bins = 9;
 void on_mouse(int event, int x, int y, int flags, void*);
 void show_img(void*);
 void show_img_final();
-void plot_histogram(int x, int y, void*);
+void plot_histogram(int x, int y, void*, int method);
 void get_histograms(void*);
 void get_histogramsRGB(void*);
+void get_histogramsGRAD(void*);
 void match_histogram(int method);
 
 map<Mat*, Mat*> imgMap;
@@ -35,6 +37,8 @@ map<Mat*, vector< vector<MatND> > > histMapRGB;
 map<Mat*, vector< map<Mat*, int> > > matchMap;
 
 map<Mat*, Scalar> colorMap;
+map<string, int> methodMap =
+{ { "GRAY", 0}, {"RGB", 1}, {"GRAD", 2} };
 
 template<typename ... Args>
 
@@ -88,16 +92,28 @@ int main(int ac, char** av) {
         waitKey(10);
     }
     // 히스토그램 분석 시작
+
     get_histograms(&img_resize_1);
     get_histograms(&img_resize_2);
     cout << "his" << endl;
     get_histogramsRGB(&img_resize_1);
     get_histogramsRGB(&img_resize_2);
     cout << "hisRGB" << endl;
-    plot_histogram(100, 100, &img_resize_1);
-    plot_histogram(100, 430, &img_resize_2);
+    get_histogramsGRAD(&img_resize_1);
+    get_histogramsGRAD(&img_resize_2);
+    cout << "hisGRAD" << endl;
+
+    cout << "Histogram method(GRAY, RGB, GRAD)" << endl;
+    string method;
+    cin >> method;
+    for (int i = 0; i < method.size(); i++) {
+        method[i] = toupper(method[i]);
+    }
+
+    plot_histogram(100, 100, &img_resize_1, methodMap[method]);
+    plot_histogram(100, 430, &img_resize_2, methodMap[method]);
     cout << "plothis" << endl;
-    match_histogram(GRAY);
+    match_histogram(methodMap[method]);
     show_img_final();
 	imshow("img1", img_resize_1);
 	imshow("img2", img_resize_2);
@@ -202,6 +218,7 @@ void get_histograms(void* param) {
     img->copyTo(img_copy);
 
     cvtColor(img_copy, img_copy, COLOR_BGR2GRAY);
+    copyMakeBorder(img_copy, img_copy, 4, 4, 4, 4, BORDER_CONSTANT, Scalar(0, 0, 0));
     const int* channel_numbers = { 0 };
     float channel_range[] = { 0.0, 255.0 };
     const float* channel_ranges = channel_range;
@@ -213,7 +230,7 @@ void get_histograms(void* param) {
         int y = pnt.y;
 
         Mat img2 = img_copy(Range(y - 4, y + 4), Range(x - 4, x + 4));
-
+        
         calcHist(&img2, 1, channel_numbers, Mat(), histogram, 1, &number_bins, &channel_ranges);
         histMap[img].push_back(histogram);
     }
@@ -227,12 +244,13 @@ void get_histogramsGRAD(void* param) {
     img->copyTo(img_copy);
 
     cvtColor(img_copy, img_copy, COLOR_BGR2GRAY);
+    copyMakeBorder(img_copy, img_copy, 4, 4, 4, 4, BORDER_CONSTANT, Scalar(0, 0, 0));
     const int* channel_numbers = { 0 };
     float channel_range[] = { 0.0, 255.0 };
     const float* channel_ranges = channel_range;
 
     for (int i = 0; i < recMap[img]; i++) {
-        MatND histogram;
+        MatND histogram = Mat(9, 1, CV_32F, Scalar::all(0));
         Point pnt = pntMap[img][i];
         int x = pnt.x;
         int y = pnt.y;
@@ -240,12 +258,22 @@ void get_histogramsGRAD(void* param) {
         Mat img2 = img_copy(Range(y - 4, y + 4), Range(x - 4, x + 4));
         Mat gx, gy;
         Mat mag, ang;
-        Sobel(img2, gx, CV_8U, 1, 0);
-        Sobel(img2, gy, CV_8U, 0, 1);
-
-        cartToPolar(gx, gy, mag, ang);
-        calcHist(&img2, 1, channel_numbers, Mat(), histogram, 1, &number_bins, &channel_ranges);
-        histMap[img].push_back(histogram);
+        Sobel(img2, gx, CV_32F, 1, 0);
+        Sobel(img2, gy, CV_32F, 0, 1);
+        cartToPolar(gx, gy, mag, ang, true);
+        cout << mag << endl;
+        cout << ang << endl;
+        for (int x = 0; x<ang.cols; x++)
+            for (int y = 0; y < ang.rows; y++) {
+                float a = ang.at<float>(x, y);
+                a = a >= 180 ? a - 180 : a;
+                int index = (int)(a / 20);
+                cout << index << endl;
+                histogram.at<float>(index) += (a - index * 20) / 20 * mag.at<float>(x, y);
+                histogram.at<float>((index + 1) % 9) += ((index + 1) * 20 - a) / 20 * mag.at<float>(x, y);
+            }
+        cout << histogram<<endl;
+        histMapGrad[img].push_back(histogram);
     }
 
 }
@@ -286,7 +314,7 @@ void get_histogramsRGB(void* param) {
 
 }
 
-void plot_histogram(int x, int y, void* param) {
+void plot_histogram(int x, int y, void* param, int method) {
     cv::Mat* img = (cv::Mat*) param;
 
     int hist_w = 300;
@@ -294,8 +322,17 @@ void plot_histogram(int x, int y, void* param) {
     int bin_w = cvRound((double)hist_w / number_bins);
     cout << bin_w << endl;
     for (int i = 0; i < recMap[img]; i++) {
-        MatND histogram = histMap[img][i];
-        Mat hist_img(hist_h, hist_w, CV_8U, Scalar::all(0));
+        MatND histogram;
+        vector<MatND> histogramRGB;
+        switch (method) {
+        case(GRAY):
+            histogram = histMap[img][i];
+        case(RGB):
+            histogramRGB = histMapRGB[img][i];
+        case(GRADIENT):
+            histogram = histMapGrad[img][i];
+        }
+        Mat hist_img(hist_h, hist_w, CV_8UC3, Scalar::all(0));
         normalize(histogram, histogram, 0, hist_img.rows/2, NORM_MINMAX, -1, Mat());
 
         for (int j = 0; j < number_bins; j++)
@@ -303,9 +340,18 @@ void plot_histogram(int x, int y, void* param) {
             //Point p1 = Point(bin_w * (j - 1), hist_h - cvRound(histogram.at<float>(j - 1)));
             //Point p2 = Point(bin_w * (j), hist_h - cvRound(histogram.at<float>(j)));
 
-            Point p1 = Point(bin_w * (j - 0.5), hist_h);
-            Point p2 = Point(bin_w * (j + 0.5), hist_h - cvRound(histogram.at<float>(j)));
-            rectangle(hist_img, p1, p2, Scalar(255, 0, 0), 1, 8, 0);
+            if (method != RGB) {
+                Point p1 = Point(bin_w * (j ), hist_h);
+                Point p2 = Point(bin_w * (j +1 ), hist_h - cvRound(histogram.at<float>(j)));
+                rectangle(hist_img, p1, p2, Scalar(255, 0, 0), 1, 8, 0);
+            }
+            else {
+                for (int k = 0; k < 3; k++) {
+                    Point p1 = Point(bin_w * (j + 1 / 3 * k), hist_h);
+                    Point p2 = Point(bin_w * (j + 1 / 3 * (k + 1)), hist_h - cvRound(histogramRGB[k].at<float>(j)));
+                    rectangle(hist_img, p1, p2, Scalar(k == 2 ? 255 : 0, k == 1 ? 255 : 0, k == 0 ? 255 : 0), 1, 8, 0);
+                }
+            }
         }
         putText(hist_img, string_format("%d", i + 1), Point(30, 30), FONT_HERSHEY_PLAIN, 1, (0, 0, 255), 1, LINE_AA);
         namedWindow(string_format("%s (%d/4)", winMap[img].c_str(), i + 1));
